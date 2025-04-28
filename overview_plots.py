@@ -9,7 +9,7 @@ import matplotlib as mpl
 import utility
 from fit_models import CheckArgs, load_all
 import pandas as pd
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 from multiprocessing import Pool
 
 
@@ -130,6 +130,17 @@ if __name__ == '__main__':
     all_repl_bouts = [r[1][0] for r in all_replay]
 
     # for both experiment types plot temperature according to arena position
+    # and overlay example trajectory which is also plotted below
+    # plot example stimulus and behavior trajectory at same time across plaid, replay and plaid control
+    # NOTE: Since frame drops occur at random, we need to align trajectories based on the original frame
+    exp_ix = 3
+    length = 1100
+    s_frame = 600_000
+    e_frame = s_frame + length
+    plaid_orig_frame_index = all_plaid_fish[exp_ix]["TFile frame"][s_frame]
+    s_frame_repl = np.where(all_repl_fish[exp_ix]["TFile frame"] == plaid_orig_frame_index)[0][0]
+    e_frame_repl = s_frame_repl + length
+
     cmap = pl.colormaps["inferno"]
     all_x_plaid = np.hstack([pf["X Position"][pf["Experiment phase"] == 9] for pf in all_plaid_fish])
     selector = np.random.rand(all_x_plaid.size)
@@ -139,6 +150,10 @@ if __name__ == '__main__':
     all_t_plaid = np.hstack([pf["Temperature"][pf["Experiment phase"] == 9] for pf in all_plaid_fish])[selected]
     fig, (ax_plot, ax_cbar) = pl.subplots(ncols=2, width_ratios=[1, 0.1])
     sc = ax_plot.scatter(all_x_plaid, all_y_plaid, s=1, c=all_t_plaid, rasterized=True, cmap=cmap)
+    ax_plot.plot(all_plaid_fish[exp_ix]["X Position"][s_frame:e_frame],
+                 all_plaid_fish[exp_ix]["Y Position"][s_frame:e_frame], 'w')
+    ax_plot.plot(all_plaid_fish[exp_ix]["X Position"][s_frame],
+                 all_plaid_fish[exp_ix]["Y Position"][s_frame], 'w.')
     ax_plot.set_xlabel("X Position [mm]")
     ax_plot.set_ylabel("Y Position [mm]")
     ax_plot.axis('equal')
@@ -153,6 +168,10 @@ if __name__ == '__main__':
     all_t_repl = np.hstack([rf["Temperature"][rf["Experiment phase"] == 9] for rf in all_repl_fish])[selected]
     fig, (ax_plot, ax_cbar) = pl.subplots(ncols=2, width_ratios=[1, 0.1])
     sc = ax_plot.scatter(all_x_repl, all_y_repl, s=1, c=all_t_repl, rasterized=True, cmap=cmap)
+    ax_plot.plot(all_repl_fish[exp_ix]["X Position"][s_frame_repl:e_frame_repl],
+                 all_repl_fish[exp_ix]["Y Position"][s_frame_repl:e_frame_repl], 'w')
+    ax_plot.plot(all_repl_fish[exp_ix]["X Position"][s_frame_repl],
+                 all_repl_fish[exp_ix]["Y Position"][s_frame_repl], 'w.')
     ax_plot.set_xlabel("X Position [mm]")
     ax_plot.set_ylabel("Y Position [mm]")
     ax_plot.axis('equal')
@@ -176,22 +195,13 @@ if __name__ == '__main__':
     fig.savefig(path.join(plot_dir, f"Stimulus_AutoCorrelation.pdf"))
 
 
-    # plot example stimulus and behavior trajectory at same time across plaid, replay and plaid control
-    # NOTE: Since frame drops occur at random, we need to align trajectories based on the original frame
-    exp_ix = 3
-    length = 1100
-    s_frame = 600_000
-    e_frame = s_frame + length
-    plaid_orig_frame_index = all_plaid_fish[exp_ix]["TFile frame"][s_frame]
-    s_frame_repl = np.where(all_repl_fish[exp_ix]["TFile frame"] == plaid_orig_frame_index)[0][0]
-    e_frame_repl = s_frame_repl + length
     time = np.linspace(0, length/250, length, endpoint=False)
     fig, axes = pl.subplots(nrows=4, ncols=2, sharey='row', sharex='all', figsize=[16, 9])
     ax_plaid = axes[:, 0]
     ax_repl = axes[:, 1]
 
     ax_plaid[0].plot(time, all_plaid_fish[exp_ix]["Temperature"][s_frame:e_frame], 'k')
-    ax_plaid[0].set_ylabel("Stimulus [mW]")
+    ax_plaid[0].set_ylabel("Stimulus [C]")
     ax_plaid[1].plot(time, all_plaid_fish[exp_ix]["Instant speed"][s_frame:e_frame], 'k')
     ax_plaid[1].set_ylabel("Speed [mm/s]")
     ax_plaid[2].plot(time, np.rad2deg(all_plaid_fish[exp_ix]["Tail tip angle"][s_frame:e_frame]), 'k')
@@ -233,44 +243,114 @@ if __name__ == '__main__':
     #   Importantly, if the process is inhomogeneous the real frequencies  won't line up with the expectation
     #   since (P(N|q1) + P(N|q2))/2 != P(N|(q1+q2)/2) except for N=1
     #   This means for each experiment, we can compute q
-    all_ibi_p = np.hstack([b["IBI"][b["Experiment phase"] == 9] for b in all_plaid_bouts])
-    all_ibi_r = np.hstack([b["IBI"][b["Experiment phase"] == 9] for b in all_repl_bouts])
-    ibi_bins = np.linspace(0, 3000, 150)
+
+    def compute_distr_stats(name: str) -> None:
+        all_p = [b[name][b["Experiment phase"] == 9] for b in all_plaid_bouts]
+        all_r = [b[name][b["Experiment phase"] == 9] for b in all_repl_bouts]
+        all_bline = [b[name][b["Experiment phase"] == 1] for b in (all_plaid_bouts+all_repl_bouts)]
+        pv, _, stat = utility.ks_bootstrap_test_by_fish(all_p, all_r, 10000)
+        print(f"{name} Plaid vs. Replay: p={pv}; stat={stat}; N={len(all_p) + len(all_r)}")
+
+        pv, _, stat = utility.ks_bootstrap_test_by_fish(all_p, all_bline, 10000)
+        print(f"{name} Plaid vs. Baseline: p={pv}; stat={stat}; N={len(all_p) + len(all_bline)}")
+
+        pv, _, stat = utility.ks_bootstrap_test_by_fish(all_r, all_bline, 10000)
+        print(f"{name} Replay vs. Baseline: p={pv}; stat={stat}; N={len(all_bline) + len(all_r)}")
+
+    # def ks_bootstrap_test_by_bout(sample1: List, sample2: List, nboot: int) -> Tuple[float, np.ndarray, float]:
+    #     true_1 = np.hstack(sample1)
+    #     true_2 = np.hstack(sample2)
+    #     true_ks_stat = kstest(true_1, true_2).statistic
+    #     combined = np.r_[true_1, true_2]
+    #     ix_combined = np.arange(combined.size).astype(int)
+    #     boot_stats = np.zeros(nboot)
+    #     for i in range(nboot):
+    #         ix1 = np.random.choice(ix_combined, true_1.size)
+    #         ix2 = np.random.choice(ix_combined, true_2.size)
+    #         s1 = combined[ix1]
+    #         s2 = combined[ix2]
+    #         boot_stats[i] = kstest(s1, s2).statistic
+    #     # estimate p-value based on normal approximation if no elements in boot_stats are larger than true_ks_stat
+    #     if np.sum(boot_stats >= true_ks_stat) == 0:
+    #         print("p-value estimated")
+    #         std = np.std(boot_stats)
+    #         n_sigma = (true_ks_stat - np.mean(boot_stats)) / std
+    #         p = 1 - norm.cdf(n_sigma)
+    #     else:
+    #         p = np.sum(boot_stats >= true_ks_stat) / nboot
+    #     return p, boot_stats, true_ks_stat
+
+
+    ibi_bins = np.linspace(0, 3000, 151)
+    ibi_bc = ibi_bins[:-1] + np.diff(ibi_bins)/2
+    all_ibi_hist_p = np.vstack([np.histogram(b["IBI"][b["Experiment phase"] == 9], bins=ibi_bins, density=True)[0] for b in all_plaid_bouts])
+    all_ibi_hist_r = np.vstack([np.histogram(b["IBI"][b["Experiment phase"] == 9], bins=ibi_bins, density=True)[0] for b in all_repl_bouts])
+    all_ibi_hist_bline = np.vstack([np.histogram(b["IBI"][b["Experiment phase"] == 1], bins=ibi_bins, density=True)[0] for b in (all_repl_bouts+all_plaid_bouts)])
 
     fig = pl.figure()
-    pl.hist(all_ibi_p, bins=ibi_bins, density=True, label="Plaid")
-    pl.hist(all_ibi_r, bins=ibi_bins, density=True, label="Replay", alpha=0.5)
+    m, e = utility.boot_error(all_ibi_hist_p, 1000, np.mean)
+    pl.fill_between(ibi_bc, m-e, m+e, color='C0', alpha=0.3)
+    pl.plot(ibi_bc, m, 'C0', label="Plaid")
+    m, e = utility.boot_error(all_ibi_hist_r, 1000, np.mean)
+    pl.fill_between(ibi_bc, m - e, m + e, color='C3', alpha=0.3)
+    pl.plot(ibi_bc, m, 'C3', label="Replay")
+    m, e = utility.boot_error(all_ibi_hist_bline, 1000, np.mean)
+    pl.fill_between(ibi_bc, m - e, m + e, color='k', alpha=0.3)
+    pl.plot(ibi_bc, m, 'k--', label="Baseline")
     pl.xlabel("Interbout interval [ms]")
     pl.ylabel("Density")
     pl.legend()
     sns.despine()
     fig.savefig(path.join(plot_dir, "IBI_Distribution.pdf"))
 
-    all_disp_p = np.hstack([b["Displacement"][b["Experiment phase"] == 9] for b in all_plaid_bouts])
-    all_disp_r = np.hstack([b["Displacement"][b["Experiment phase"] == 9] for b in all_repl_bouts])
+
     disp_bins = np.linspace(0, 10, 250)
+    disp_bc = disp_bins[:-1] + np.diff(disp_bins)/2
+    all_disp_hist_p = np.vstack([np.histogram(b["Displacement"][b["Experiment phase"] == 9], bins=disp_bins, density=True)[0] for b in all_plaid_bouts])
+    all_disp_hist_r = np.vstack([np.histogram(b["Displacement"][b["Experiment phase"] == 9], bins=disp_bins, density=True)[0] for b in all_repl_bouts])
+    all_disp_hist_bline = np.vstack([np.histogram(b["Displacement"][b["Experiment phase"] == 1], bins=disp_bins, density=True)[0] for b in (all_repl_bouts+all_plaid_bouts)])
 
     fig = pl.figure()
-    pl.hist(all_disp_p, bins=disp_bins, density=True, label="Plaid")
-    pl.hist(all_disp_r, bins=disp_bins, density=True, label="Replay", alpha=0.5)
+    m, e = utility.boot_error(all_disp_hist_p, 1000, np.mean)
+    pl.fill_between(disp_bc, m - e, m + e, color='C0', alpha=0.3)
+    pl.plot(disp_bc, m, 'C0', label="Plaid")
+    m, e = utility.boot_error(all_disp_hist_r, 1000, np.mean)
+    pl.fill_between(disp_bc, m - e, m + e, color='C3', alpha=0.3)
+    pl.plot(disp_bc, m, 'C3', label="Replay")
+    m, e = utility.boot_error(all_disp_hist_bline, 1000, np.mean)
+    pl.fill_between(disp_bc, m - e, m + e, color='k', alpha=0.3)
+    pl.plot(disp_bc, m, 'k--', label="Baseline")
     pl.xlabel("Displacement [mm]")
     pl.ylabel("Density")
     pl.legend()
     sns.despine()
     fig.savefig(path.join(plot_dir, "Displacement_Distribution.pdf"))
 
-    all_ang_p = np.rad2deg(np.hstack([b["Angle change"][b["Experiment phase"] == 9] for b in all_plaid_bouts]))
-    all_ang_r = np.rad2deg(np.hstack([b["Angle change"][b["Experiment phase"] == 9] for b in all_repl_bouts]))
     ang_bins = np.linspace(-180, 180, 250)
+    ang_bc = ang_bins[:-1] + np.diff(ang_bins)/2
+    all_ang_hist_p = np.vstack([np.histogram(np.rad2deg(b["Angle change"][b["Experiment phase"] == 9]), bins=ang_bins, density=True)[0] for b in all_plaid_bouts])
+    all_ang_hist_r = np.vstack([np.histogram(np.rad2deg(b["Angle change"][b["Experiment phase"] == 9]), bins=ang_bins, density=True)[0] for b in all_repl_bouts])
+    all_ang_hist_bline = np.vstack([np.histogram(np.rad2deg(b["Angle change"][b["Experiment phase"] == 9]), bins=ang_bins, density=True)[0] for b in (all_repl_bouts + all_plaid_bouts)])
 
     fig = pl.figure()
-    pl.hist(all_ang_p, bins=ang_bins, density=True, label="Plaid")
-    pl.hist(all_ang_r, bins=ang_bins, density=True, label="Replay", alpha=0.5)
+    m, e = utility.boot_error(all_ang_hist_p, 1000, np.mean)
+    pl.fill_between(ang_bc, m - e, m + e, color='C0', alpha=0.3)
+    pl.plot(ang_bc, m, 'C0', label="Plaid")
+    m, e = utility.boot_error(all_ang_hist_r, 1000, np.mean)
+    pl.fill_between(ang_bc, m - e, m + e, color='C3', alpha=0.3)
+    pl.plot(ang_bc, m, 'C3', label="Replay")
+    m, e = utility.boot_error(all_ang_hist_bline, 1000, np.mean)
+    pl.fill_between(ang_bc, m - e, m + e, color='k', alpha=0.3)
+    pl.plot(ang_bc, m, 'k--', label="Baseline")
     pl.xlabel("Turn angle [degrees]")
     pl.ylabel("Density")
     pl.legend()
     sns.despine()
     fig.savefig(path.join(plot_dir, "Turn_Distribution.pdf"))
+
+    compute_distr_stats("IBI")
+    compute_distr_stats("Displacement")
+    compute_distr_stats("Angle change")
 
     all_tdir_p = [np.array(np.sign(b["Angle change"][b["Experiment phase"] == 9]) > 0) for b in all_plaid_bouts]
     all_tdir_r = [np.array(np.sign(b["Angle change"][b["Experiment phase"] == 9]) > 0) for b in all_repl_bouts]

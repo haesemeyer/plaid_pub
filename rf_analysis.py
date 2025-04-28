@@ -17,8 +17,9 @@ from os import path
 import os
 import loading
 from processing import predict_temperature
-from scipy.stats import wilcoxon
+from scipy.stats import wilcoxon, ranksums
 from multiprocessing import Pool
+import utility
 
 
 def prepare_rf(dyn) -> Tuple[np.ndarray, Optional[np.ndarray]]:
@@ -114,7 +115,9 @@ def compute_rf_effect(res_dict: Dict, std_stimuli: List[np.ndarray], norm_fun: c
                                                                                                             np.ndarray,
                                                                                                             np.ndarray,
                                                                                                             np.ndarray,
-                                                                                                          pd.DataFrame]:
+                                                                                                          pd.DataFrame,
+                                                                                                            List,
+                                                                                                            List]:
     """
     Computes the predicted effect the temperature receptive field has on behavior across experiments
     :param res_dict: The receptive field dictionary
@@ -126,6 +129,8 @@ def compute_rf_effect(res_dict: Dict, std_stimuli: List[np.ndarray], norm_fun: c
         [1]: n_experiments x n_bins matrix of effect histograms for plaid
         [2]: n_experiments x n_bins matrix of effect histograms for replay
         [3]: Dataframe of effect standard deviations
+        [4]: The per fish plaid effects
+        [5]: The per fish replay effects
     """
     std_plaid = []
     std_replay = []
@@ -151,7 +156,7 @@ def compute_rf_effect(res_dict: Dict, std_stimuli: List[np.ndarray], norm_fun: c
         replay_effects_hist.append(np.histogram(re, bins, density=True)[0])
         std_replay.append(np.std(re))
     return (bin_centers, np.vstack(plaid_effects_hist), np.vstack(replay_effects_hist),
-            pd.DataFrame(np.c_[std_plaid, std_replay], columns=["Plaid", "Replay"]))
+            pd.DataFrame(np.c_[std_plaid, std_replay], columns=["Plaid", "Replay"]), plaid_effects, replay_effects)
 
 
 def load_stim(e_file: str, std: uti.InputDataStandard) -> np.ndarray:
@@ -213,6 +218,42 @@ if __name__ == '__main__':
     fig = plot_receptive_fields(prob_dict, standardization)
     fig.savefig(path.join(plot_dir, "RF_probability.pdf"))
 
+    # plot nonparametric p-values for each timepoint across conditions with cut-offs corrected for multiple comparison
+    def p_vals(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        pv = np.zeros(a.shape[1])
+        for col in range(a.shape[1]):
+            pv[col] = ranksums(a[:, col], b[:, col]).pvalue
+        return pv
+
+    time = np.linspace(-1 + 1 / 25, 0, 25)
+
+    fig = pl.figure()
+    pl.plot(time, p_vals(prob_dict["Temperature"]["plaid"], prob_dict["Temperature"]["replay"]), 'o', label="Plaid vs. Replay")
+    pl.plot(time, p_vals(prob_dict["Temperature"]["plaid"], prob_dict["Temperature"]["replay"]), "C0", alpha=0.4)
+    pl.plot([time.min(), time.max()], [0.05/25, 0.05/25], "k--")
+    pl.plot([time.min(), time.max()], [0.01/25, 0.01/25], "k--")
+    pl.plot([time.min(), time.max()], [0.001/25, 0.001/25], "k--")
+    pl.yscale('log')
+    pl.xlabel("Time [s]")
+    pl.ylabel("p value")
+    pl.legend()
+    sns.despine()
+    fig.savefig(path.join(plot_dir, "Temperature_p_values.pdf"))
+
+    fig = pl.figure()
+    pl.plot(time, p_vals(prob_dict["History"]["plaid"], prob_dict["History"]["replay"]), 'o', label="Plaid vs. Replay")
+    pl.plot(time, p_vals(prob_dict["History"]["plaid"], prob_dict["History"]["replay"]), "C0", alpha=0.4)
+    pl.plot([time.min(), time.max()], [0.05/25, 0.05/25], "k--")
+    pl.plot([time.min(), time.max()], [0.01/25, 0.01/25], "k--")
+    pl.plot([time.min(), time.max()], [0.001/25, 0.001/25], "k--")
+    pl.yscale('log')
+    pl.xlabel("Time [s]")
+    pl.ylabel("p value")
+    pl.legend()
+    sns.despine()
+    fig.savefig(path.join(plot_dir, "History_p_values.pdf"))
+
+
     # load stimuli from the plaid experiments (NOTE: Replay stimuli are exactly the same by construction)
     load_pool = Pool(10)
     plaid_exps = loading.find_all_exp_paths(plaid_dir)
@@ -225,7 +266,9 @@ if __name__ == '__main__':
         pbout_logit = np.log(standardization.bout_end_mean / (1 - standardization.bout_end_mean))
         return 1 / (np.exp(-1*data - pbout_logit) + 1) * 25 - standardization.bout_end_mean * 25
 
-    bc_freq, effect_p_prob, effect_r_prob, std_prob = compute_rf_effect(prob_dict, all_stimuli, nf_prob)
+    bc_freq, effect_p_prob, effect_r_prob, std_prob, p_effects, r_effects = compute_rf_effect(prob_dict, all_stimuli, nf_prob)
+    pv, _, stat = utility.ks_bootstrap_test_by_fish(p_effects, r_effects, 1000)
+    print(f"Comparison of receptive field effects: p-value: {pv}; statistic: {stat}")
 
     # Plot histograms of receptive field effects
     fig, ax = pl.subplots()

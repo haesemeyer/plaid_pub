@@ -10,6 +10,7 @@ from typing import Union, Optional, Tuple, Any, List
 import model_defs
 from dataclasses import dataclass
 from sklearn.metrics import roc_auc_score
+from scipy.stats import kstest, norm
 
 
 @dataclass
@@ -530,6 +531,39 @@ def get_flip_maintain(angles: np.ndarray, window_length: int) -> np.ndarray:
         else:
             flip_maintain[i] = 0
     return flip_maintain
+
+
+def ks_bootstrap_test_by_fish(sample1: List, sample2: List, nboot: int) -> Tuple[float, np.ndarray, float]:
+    """
+    Computes ks test statistic in cases where data come from different individuals and where variability is believed
+    to be larger between individuals than within individuals
+    :param sample1: List of data-samples with each element in the list being one individual fish
+    :param sample2: List of data-samples with each element in the list being one individual fish
+    :param nboot: The number of bootstrap resamples to perform
+    :return:
+        [0]: The p-value
+        [1]: The test statistic of the joint bootstrap resamples
+        [2]: The test statistic of the true comparison
+    """
+    true_ks_stat = kstest(np.hstack(sample1), np.hstack(sample2)).statistic
+    combined = sample1 + sample2
+    ix_combined = np.arange(len(combined)).astype(int)
+    boot_stats = np.zeros(nboot)
+    for i in range(nboot):
+        ix1 = np.random.choice(ix_combined, len(sample1))
+        ix2 = np.random.choice(ix_combined, len(sample2))
+        s1 = np.hstack([combined[ix] for ix in ix1])
+        s2 = np.hstack([combined[ix] for ix in ix2])
+        boot_stats[i] = kstest(s1, s2).statistic
+    # estimate p-value based on normal approximation if no elements in boot_stats are larger than true_ks_stat
+    if np.sum(boot_stats >= true_ks_stat) == 0:
+        print("p-value estimated through normal approximation")
+        std = np.std(boot_stats)
+        n_sigma = (true_ks_stat - np.mean(boot_stats)) / std
+        p = 1 - norm.cdf(n_sigma)
+    else:
+        p = np.sum(boot_stats >= true_ks_stat) / nboot
+    return p, boot_stats, true_ks_stat
 
 
 if __name__ == '__main__':
